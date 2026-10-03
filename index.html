@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>円の面積シミュレーション</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 背景を白にし、16:9コンテナを中央配置 */
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #ffffff; 
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            user-select: none;
+        }
+        
+        /* 16:9 比率を維持するメインコンテナ */
+        .app-container {
+            width: 100vw;
+            height: 56.25vw; /* 100 * 9 / 16 */
+            max-height: 100vh;
+            max-width: 177.77vh; /* 100 * 16 / 9 */
+            background-color: #eff6ff; 
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 0 25px rgba(0, 0, 0, 0.12);
+            overflow: hidden;
+            border-radius: 12px;
+            border: 1px solid #dbeafe;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- 上部コントロールバー（位置ズレ防止・タイトル基準固定） -->
+        <div class="bg-white p-2 md:p-3 shadow-sm flex flex-wrap items-center justify-between z-10 shrink-0 border-b-2 border-blue-200">
+            <h1 class="text-xl md:text-2xl font-black text-blue-800 whitespace-nowrap pl-2">
+                円の面積シミュレーション
+            </h1>
+            
+            <div class="flex items-center gap-3 md:gap-5 pr-2 mt-1 md:mt-0">
+                <!-- 分割数スライダー -->
+                <div class="flex items-center gap-2 md:gap-3 bg-blue-50 px-3 py-1.5 md:py-2 rounded-xl border border-blue-200 shadow-inner">
+                    <label for="div-slider" class="font-bold text-gray-700 whitespace-nowrap text-xs md:text-base">分割数:</label>
+                    <div class="flex flex-col justify-center">
+                        <input type="range" id="div-slider" min="3" max="7" value="3" class="w-36 md:w-48 cursor-pointer accent-blue-600">
+                        <div class="flex justify-between w-full px-1 text-[10px] md:text-xs font-bold text-blue-600 mt-0.5">
+                            <span>8</span><span>16</span><span>32</span><span>64</span><span>128</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ボタン群 -->
+                <div class="flex items-center gap-2 md:gap-3">
+                    <button id="btn-toggle" class="bg-orange-500 hover:bg-orange-600 text-white font-bold py-1.5 md:py-2.5 px-3 md:px-5 rounded-xl shadow-md transition whitespace-nowrap text-xs md:text-base active:scale-95 text-center min-w-[110px] md:min-w-[130px] cursor-pointer">
+                        形を変える
+                    </button>
+                    <!-- invisible で幅を固定確保しUIのズレを防止 -->
+                    <button id="btn-explain" class="invisible bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-1.5 md:py-2.5 px-3 md:px-5 rounded-xl shadow-md transition whitespace-nowrap text-xs md:text-base active:scale-95 text-center min-w-[110px] md:min-w-[130px] cursor-pointer">
+                        説明を出す
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 描画用キャンバスエリア -->
+        <div class="flex-1 w-full relative min-h-0 overflow-hidden">
+            <canvas id="gameCanvas" class="w-full h-full block cursor-pointer" style="touch-action: none;"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const btnToggle = document.getElementById('btn-toggle');
+        const btnExplain = document.getElementById('btn-explain');
+        const slider = document.getElementById('div-slider');
+
+        let width = 0, height = 0;
+        let r = 100, centerX = 0, centerY = 0;
+        let divisions = 8;
+        let halfDivs = 4;
+        let theta = Math.PI / halfDivs;
+
+        // アニメーション制御 (堅牢な時間基準エンジン)
+        let progress = 0; 
+        let isAnimating = false; 
+        let animationFrameId = null;
+        const DURATION = 2500; // アニメーション時間 (ミリ秒)
+
+        // 表示モードとフラグ
+        let isRectShape = false;
+        let showLabels = false;
+        let wasExplainActivated = false;
+
+        // カバー & 赤線 フラグ
+        let topCoverVisible = true;   // 水色カバー (円周の半分)
+        let topRedLine = false;        // 上弦の赤線
+        let rightCoverVisible = true; // ピンクカバー (半径)
+        let rightRedLine = false;     // 右半径の赤線
+
+        let topRectBounds = null;
+        let rightRectBounds = null;
+
+        function resize() {
+            if (!canvas.parentElement) return;
+            width = canvas.parentElement.clientWidth;
+            height = canvas.parentElement.clientHeight;
+            
+            if (width === 0 || height === 0) return;
+
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
+            ctx.setTransform(1, 0, 0, 1, 0, 0); 
+            ctx.scale(dpr, dpr);
+            
+            // 16:9 画面を最大活用した円半径計算
+            let maxR_Width = (width - 80) / (Math.PI + 0.5); 
+            let maxR_Height = (height - 90) / 2.2; 
+            
+            r = Math.max(20, Math.min(maxR_Height, maxR_Width));
+            
+            centerX = width / 2;
+            centerY = height / 2 + 10;
+            
+            draw();
+        }
+        function drawPiece(x, y, angle, isTop, isRightmostBottomPiece) {
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(angle);
+            
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.arc(0, 0, r, -theta / 2 - 0.0005, theta / 2 + 0.0005);
+            ctx.closePath();
+            
+            // ピースの色付け
+            ctx.fillStyle = isTop ? 'rgba(251, 146, 60, 0.95)' : 'rgba(253, 224, 71, 0.95)';
+            ctx.fill();
+            
+            // 視認性の良い分割線
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+            ctx.lineWidth = Math.max(1.0, Math.min(2.0, r * 0.012));
+            ctx.stroke();
+
+            // 「円周の半分」赤線（上半円ピースの外弧）
+            if (isTop && topRedLine) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(0, 0, r, -theta / 2, theta / 2);
+                ctx.strokeStyle = '#ef4444';
+                ctx.lineWidth = 4.8;
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            // 「半径」赤線（一番右下・黄色ピースの右側半径）
+            if (!isTop && isRightmostBottomPiece && rightRedLine) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.lineTo(r * Math.cos(-theta / 2), r * Math.sin(-theta / 2));
+                ctx.strokeStyle = '#ef4444';
+                ctx.lineWidth = 4.8;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+                ctx.restore();
+            }
+            
+            ctx.restore();
+        }
+
+        function drawLabels(startX, totalWidth, Y) {
+            ctx.save();
+            const fontSize = Math.max(14, r * 0.12);
+            ctx.font = `bold ${fontSize}px sans-serif`;
+            const padX = 14;
+            const padY = 6;
+
+            // 1. 上部「円周の半分」
+            const topTextY = Y - r / 2 - 25;
+            const textWidthTop = ctx.measureText('円周の半分').width;
+            topRectBounds = {
+                x: startX + totalWidth / 2 - textWidthTop / 2 - padX,
+                y: topTextY - 10 - fontSize - padY,
+                w: textWidthTop + padX * 2,
+                h: fontSize + padY * 2
+            };
+
+            // 両矢印（長さの明示）
+            ctx.fillStyle = '#1e3a8a'; 
+            ctx.strokeStyle = '#1e3a8a';
+            ctx.lineWidth = 2.5;
+            
+            ctx.beginPath(); ctx.moveTo(startX, topTextY); ctx.lineTo(startX + totalWidth, topTextY); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(startX + 10, topTextY - 7); ctx.lineTo(startX, topTextY); ctx.lineTo(startX + 10, topTextY + 7); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(startX + totalWidth - 10, topTextY - 7); ctx.lineTo(startX + totalWidth, topTextY); ctx.lineTo(startX + totalWidth - 10, topTextY + 7); ctx.stroke();
+
+            if (topCoverVisible) {
+                drawCover(topRectBounds.x, topRectBounds.y, topRectBounds.w, topRectBounds.h, '#38bdf8', '#0284c7');
+            } else {
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'bottom';
+                ctx.fillStyle = '#1e3a8a';
+                ctx.fillText('円周の半分', startX + totalWidth / 2, topTextY - 8);
+            }
+
+            // 2. 右側「半径」
+            const rightTextX = startX + totalWidth + 18;
+            const textWidthRight = ctx.measureText('半径').width;
+            rightRectBounds = {
+                x: rightTextX + 12 - padX / 2,
+                y: Y - fontSize / 2 - padY,
+                w: textWidthRight + padX,
+                h: fontSize + padY * 2
+            };
+
+            // 両矢印
+            ctx.beginPath(); ctx.moveTo(rightTextX, Y - r / 2); ctx.lineTo(rightTextX, Y + r / 2); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(rightTextX - 7, Y - r / 2 + 10); ctx.lineTo(rightTextX, Y - r / 2); ctx.lineTo(rightTextX + 7, Y - r / 2 + 10); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(rightTextX - 7, Y + r / 2 - 10); ctx.lineTo(rightTextX, Y + r / 2); ctx.lineTo(rightTextX + 7, Y + r / 2 - 10); ctx.stroke();
+
+            if (rightCoverVisible) {
+                drawCover(rightRectBounds.x, rightRectBounds.y, rightRectBounds.w, rightRectBounds.h, '#f472b6', '#db2777');
+            } else {
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'middle';
+                ctx.fillStyle = '#1e3a8a';
+                ctx.fillText('半径', rightTextX + 12, Y);
+            }
+            
+            ctx.restore();
+        }
+
+        function drawCover(x, y, w, h, fillColor, strokeColor) {
+            ctx.save();
+            ctx.fillStyle = fillColor; 
+            ctx.strokeStyle = strokeColor;
+            ctx.lineWidth = 2;
+            
+            const cornerRadius = 6;
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(x, y, w, h, cornerRadius);
+            } else {
+                ctx.rect(x, y, w, h);
+            }
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `bold ${Math.max(13, h * 0.55)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('？', x + w / 2, y + h / 2 + 1);
+            
+            ctx.restore();
+        }
+
+        let activeTarget = null;
+        let startPointerX = 0;
+        let startPointerY = 0;
+        let isDraggingCover = false;
+
+        canvas.addEventListener('pointerdown', (e) => {
+            if (!showLabels || progress !== 1) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+
+            activeTarget = null;
+            isDraggingCover = false;
+
+            if (topCoverVisible && topRectBounds &&
+                clickX >= topRectBounds.x && clickX <= topRectBounds.x + topRectBounds.w &&
+                clickY >= topRectBounds.y && clickY <= topRectBounds.y + topRectBounds.h) {
+                activeTarget = 'top';
+                startPointerX = clickX;
+                startPointerY = clickY;
+                try { canvas.setPointerCapture(e.pointerId); } catch(err){}
+            }
+            else if (rightCoverVisible && rightRectBounds &&
+                     clickX >= rightRectBounds.x && clickX <= rightRectBounds.x + rightRectBounds.w &&
+                     clickY >= rightRectBounds.y && clickY <= rightRectBounds.y + rightRectBounds.h) {
+                activeTarget = 'right';
+                startPointerX = clickX;
+                startPointerY = clickY;
+                try { canvas.setPointerCapture(e.pointerId); } catch(err){}
+            }
+        });
+
+        canvas.addEventListener('pointermove', (e) => {
+            if (!activeTarget) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const currentX = e.clientX - rect.left;
+            const currentY = e.clientY - rect.top;
+
+            const dist = Math.hypot(currentX - startPointerX, currentY - startPointerY);
+            if (dist > 8) {
+                isDraggingCover = true;
+                if (activeTarget === 'top') {
+                    topCoverVisible = false;
+                } else if (activeTarget === 'right') {
+                    rightCoverVisible = false;
+                }
+                draw();
+            }
+        });
+
+        canvas.addEventListener('pointerup', (e) => {
+            if (activeTarget) {
+                try { canvas.releasePointerCapture(e.pointerId); } catch(err){}
+                if (!isDraggingCover) {
+                    if (activeTarget === 'top') {
+                        topRedLine = !topRedLine;
+                        if (topRedLine) rightRedLine = false; // 横の赤線を出す時、縦の赤線を消す
+                    } else if (activeTarget === 'right') {
+                        rightRedLine = !rightRedLine;
+                        if (rightRedLine) topRedLine = false; // 縦の赤線を出す時、横の赤線を消す
+                    }
+                    draw();
+                }
+                activeTarget = null;
+                isDraggingCover = false;
+            }
+        });
+
+        function draw() {
+            if (width === 0 || height === 0) return;
+            ctx.clearRect(0, 0, width, height);
+            
+            let combP = 0; 
+            let dockP = 0; 
+            const ease = (x) => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+            
+            if (progress < 0.45) { 
+                combP = ease(progress / 0.45); 
+                dockP = 0; 
+            } else if (progress < 0.65) {
+                combP = 1;
+                dockP = 0;
+            } else { 
+                combP = 1; 
+                dockP = ease((progress - 0.65) / 0.35); 
+            }
+            
+            let L_circle = Math.PI * r;
+            let L_flat = halfDivs * 2 * r * Math.sin(theta / 2);
+            let L = L_circle * (1 - combP) + L_flat * combP; 
+            
+            let A = Math.PI * Math.max(0.000001, 1 - combP);
+            let R_arc = L / A;       
+            
+            let target_Y_offset = r * Math.cos(theta / 2) / 2;
+            let tip_Y0_top = centerY + target_Y_offset * dockP;
+            let tip_Y0_bot = centerY - target_Y_offset * dockP;
+            
+            for (let i = 0; i < halfDivs; i++) {
+                // 上半分のピース
+                let t_top = (i + 0.5) / halfDivs;
+                let alpha_top = A * (t_top - 0.5);
+                
+                let topX = centerX + (R_arc - r) * Math.sin(alpha_top);
+                let one_minus_cos_top = 2 * Math.pow(Math.sin(alpha_top / 2), 2);
+                let topY = tip_Y0_top + (R_arc - r) * one_minus_cos_top;
+                
+                let topAngle = -Math.PI / 2 + alpha_top;
+                drawPiece(topX, topY, topAngle, true, false);
+                
+                // 下半分のピース
+                let bot_offset = 0.5 + 0.5 * combP; 
+                let t_bot = (i + bot_offset) / halfDivs;
+                let alpha_bot = A * (t_bot - 0.5);
+                
+                let botX = centerX + (R_arc - r) * Math.sin(alpha_bot);
+                let one_minus_cos_bot = 2 * Math.pow(Math.sin(alpha_bot / 2), 2);
+                let botY = tip_Y0_bot - (R_arc - r) * one_minus_cos_bot;
+                
+                let botAngle = Math.PI / 2 - alpha_bot;
+                let isRightmostBot = (i === halfDivs - 1);
+                drawPiece(botX, botY, botAngle, false, isRightmostBot);
+            }
+            
+            // 128分割＆変形完了時に説明ラベルを描画
+            if (showLabels && progress === 1) {
+                let totalWidth = halfDivs * 2 * r * Math.sin(theta / 2);
+                let startX = centerX - totalWidth / 2;
+                drawLabels(startX, totalWidth, centerY);
+            }
+        }
+
+        function startAnimation(target) {
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            
+            if (width === 0 || height === 0) resize();
+
+            const start = performance.now();
+            const initialProgress = progress;
+            const distance = target - initialProgress;
+            if (Math.abs(distance) < 0.0001) {
+                progress = target;
+                draw();
+                return;
+            }
+
+            const duration = Math.abs(distance) * DURATION;
+
+            function step(now) {
+                const elapsed = now - start;
+                const p = Math.min(1, elapsed / duration);
+                const easeP = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+                progress = initialProgress + distance * easeP;
+
+                draw();
+
+                if (p < 1) {
+                    animationFrameId = requestAnimationFrame(step);
+                } else {
+                    progress = target;
+                    isAnimating = false;
+                    if (progress === 1 && (wasExplainActivated || topRedLine || rightRedLine || !topCoverVisible || !rightCoverVisible)) {
+                        showLabels = true;
+                    }
+                    draw();
+                }
+            }
+
+            isAnimating = true;
+            animationFrameId = requestAnimationFrame(step);
+        }
+
+        btnToggle.addEventListener('click', () => {
+            if (width === 0 || height === 0) resize();
+
+            if (isRectShape) {
+                isRectShape = false;
+                showLabels = false;
+                btnToggle.textContent = '形を変える';
+                btnToggle.classList.remove('bg-gray-500', 'hover:bg-gray-600');
+                btnToggle.classList.add('bg-orange-500', 'hover:bg-orange-600');
+                startAnimation(0);
+            } else {
+                isRectShape = true;
+                btnToggle.textContent = '円にもどす';
+                btnToggle.classList.remove('bg-orange-500', 'hover:bg-orange-600');
+                btnToggle.classList.add('bg-gray-500', 'hover:bg-gray-600');
+                startAnimation(1);
+            }
+        });
+
+        btnExplain.addEventListener('click', () => {
+            showLabels = true;
+            wasExplainActivated = true;
+            draw();
+        });
+
+        slider.addEventListener('input', (e) => {
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            isAnimating = false;
+
+            const val = parseInt(e.target.value);
+            divisions = Math.pow(2, val);
+            halfDivs = divisions / 2;
+            theta = Math.PI / halfDivs;
+            
+            // 128分割時のみ「説明を出す」ボタンを表示
+            if (divisions === 128) {
+                btnExplain.classList.remove('invisible');
+            } else {
+                btnExplain.classList.add('invisible');
+            }
+
+            if (isRectShape) {
+                isRectShape = false;
+                btnToggle.textContent = '形を変える';
+                btnToggle.classList.remove('bg-gray-500', 'hover:bg-gray-600');
+                btnToggle.classList.add('bg-orange-500', 'hover:bg-orange-600');
+                progress = 0;
+            }
+            showLabels = false;
+            wasExplainActivated = false;
+            topCoverVisible = true;
+            topRedLine = false;
+            rightCoverVisible = true;
+            rightRedLine = false;
+            
+            draw();
+        });
+
+        window.addEventListener('resize', resize);
+
+        // ResizeObserverでプレビューコンテナのサイズ変更を自動検知して常に正常描画
+        if (window.ResizeObserver && canvas.parentElement) {
+            const ro = new ResizeObserver(() => {
+                resize();
+            });
+            ro.observe(canvas.parentElement);
+        }
+        
+        function initApp() {
+            resize();
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initApp);
+        } else {
+            initApp();
+        }
+        window.onload = initApp;
+    </script>
+</body>
+</html>
